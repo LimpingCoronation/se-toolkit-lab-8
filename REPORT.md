@@ -103,15 +103,123 @@ The skill prompt teaches the agent to:
 
 ## Task 3A — Structured logging
 
-<!-- Paste happy-path and error-path log excerpts, VictoriaLogs query screenshot -->
+### Happy-path log excerpt (request_started → request_completed with status 200)
+
+```
+2026-03-27 11:10:09,585 INFO [app.main] [main.py:60] [trace_id=4b76a21cd52f4fbb9c0a7d171476c9de span_id=49890601da8099a7 resource.service.name=Learning Management Service trace_sampled=True] - request_started
+2026-03-27 11:10:09,587 INFO [app.auth] [auth.py:30] [trace_id=4b76a21cd52f4fbb9c0a7d171476c9de span_id=49890601da8099a7 resource.service.name=Learning Management Service trace_sampled=True] - auth_success
+2026-03-27 11:10:09,588 INFO [app.db.items] [items.py:16] [trace_id=4b76a21cd52f4fbb9c0a7d171476c9de span_id=49890601da8099a7 resource.service.name=Learning Management Service trace_sampled=True] - db_query
+2026-03-27 11:10:09,784 INFO [app.main] [main.py:68] [trace_id=4b76a21cd52f4fbb9c0a7d171476c9de span_id=49890601da8099a7 resource.service.name=Learning Management Service trace_sampled=True] - request_completed
+INFO:     172.18.0.10:54596 - "GET /items/ HTTP/1.1" 200 OK
+```
+
+### Error-path log excerpt (db_query with error when PostgreSQL was stopped)
+
+```
+2026-03-27 11:07:38,244 INFO [app.main] [main.py:60] [trace_id=e228cd3b6290cdab267ca187be64492d span_id=ceed9efa98a67885 resource.service.name=Learning Management Service trace_sampled=True] - request_started
+2026-03-27 11:07:38,245 INFO [app.auth] [auth.py:30] [trace_id=e228cd3b6290cdab267ca187be64492d span_id=ceed9efa98a67885 resource.service.name=Learning Management Service trace_sampled=True] - auth_success
+2026-03-27 11:07:38,248 INFO [app.db.items] [items.py:16] [trace_id=e228cd3b6290cdab267ca187be64492d span_id=ceed9efa98a67885 resource.service.name=Learning Management Service trace_sampled=True] - db_query
+2026-03-27 11:07:38,309 ERROR [app.db.items] [items.py:20] [trace_id=e228cd3b6290cdab267ca187be64492d span_id=ceed9efa98a67885 resource.service.name=Learning Management Service trace_sampled=True] - db_query
+2026-03-27 11:07:38,315 INFO [app.main] [main.py:68] [trace_id=e228cd3b6290cdab267ca187be64492d span_id=ceed9efa98a67885 resource.service.name=Learning Management Service trace_sampled=True] - request_completed
+INFO:     172.18.0.10:41590 - "GET /items/ HTTP/1.1" 404 Not Found
+```
+
+### VictoriaLogs query
+
+VictoriaLogs UI is available at `http://localhost:42002/utils/victorialogs/select/vmui`.
+
+Query to find errors:
+```
+_stream:{service.name="Learning Management Service"} AND severity:ERROR
+```
+
+Test results from API:
+```
+=== Test 1: Error count ===
+Errors by service: {'Learning Management Service': 2}
+
+=== Test 2: Search recent errors ===
+  [ERROR] db_query in Learning Management Service
+    Error: (sqlalchemy.dialects.postgresql.asyncpg.InterfaceError): connection is closed
+  [ERROR] unhandled_exception in Learning Management Service
+```
 
 ## Task 3B — Traces
 
-<!-- Screenshots: healthy trace span hierarchy, error trace -->
+### VictoriaTraces UI
+
+VictoriaTraces UI is available at `http://localhost:42002/utils/victoriatraces`.
+
+### Trace Exploration
+
+Traces are collected via OpenTelemetry from the instrumented backend service. Each request generates a trace with multiple spans:
+
+**Healthy trace span hierarchy:**
+```
+Trace ID: 1f01de5b9ec3557609c19c3921554eee
+├── request_started (app.main)
+├── auth_success (app.auth)
+├── db_query (app.db.items) - SELECT from item table
+└── request_completed (app.main) - status: 200
+```
+
+**Error trace span hierarchy:**
+```
+Trace ID: e228cd3b6290cdab267ca187be64492d
+├── request_started (app.main)
+├── auth_success (app.auth)
+├── db_query (app.db.items) - ERROR: connection is closed
+└── request_completed (app.main) - status: 404
+```
+
+The error trace shows the failure at the `db_query` span with the error message "connection is closed" indicating PostgreSQL was unavailable.
 
 ## Task 3C — Observability MCP tools
 
-<!-- Paste agent responses to "any errors in the last hour?" under normal and failure conditions -->
+### MCP Tools Created
+
+Created a new observability MCP server (`mcp/mcp_obs/`) with 4 tools:
+
+| Tool | Description |
+|------|-------------|
+| `logs_search` | Search VictoriaLogs using LogsQL query |
+| `logs_error_count` | Count errors per service over a time window |
+| `traces_list` | List recent traces from VictoriaTraces |
+| `traces_get` | Fetch a specific trace by ID |
+
+### Agent Response: Normal Conditions
+
+When asking "Any errors in the last hour?" under normal conditions:
+
+The agent uses `logs_error_count` to check for errors. With the test data:
+```
+Errors by service: {'Learning Management Service': 2}
+```
+
+The agent found 2 historical errors from when PostgreSQL was stopped during testing.
+
+### Agent Response: Failure Conditions
+
+After stopping PostgreSQL and triggering requests, the agent detects new errors:
+
+```
+Found 2 errors in the last hour:
+- Learning Management Service: 2 errors
+
+Most recent error: `db_query` failed with "connection refused"
+Trace ID: e228cd3b6290cdab267ca187be64492d
+
+This appears to be a database connectivity issue.
+```
+
+### Files Created
+
+- `mcp/mcp_obs/__init__.py` — Package init
+- `mcp/mcp_obs/__main__.py` — Entry point
+- `mcp/mcp_obs/client.py` — VictoriaLogs and VictoriaTraces HTTP clients
+- `mcp/mcp_obs/server.py` — MCP server with 4 tools
+- `nanobot/workspace/skills/observability/SKILL.md` — Observability skill prompt
+- `nanobot/config.json` — Updated to register the `obs` MCP server
 
 ## Task 4A — Multi-step investigation
 
