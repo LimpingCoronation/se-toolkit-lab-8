@@ -1,5 +1,5 @@
 """API key authentication dependency."""
-
+from datetime import datetime
 import logging
 
 from fastapi import Depends, HTTPException, status
